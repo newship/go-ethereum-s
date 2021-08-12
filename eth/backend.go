@@ -51,6 +51,8 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/rpc"
+
+	"github.com/ethereum/go-ethereum/consensus/congress"
 )
 
 // Ethereum implements the Ethereum full node service.
@@ -183,6 +185,11 @@ func New(stack *node.Node, config *Config) (*Ethereum, error) {
 	}
 	eth.bloomIndexer.Start(eth.blockchain)
 
+	// set state fn if consensus engine is congress.
+	if congressEngine, ok := eth.engine.(*congress.Congress); ok {
+		congressEngine.SetStateFn(eth.blockchain.StateAt)
+	}
+
 	if config.TxPool.Journal != "" {
 		config.TxPool.Journal = stack.ResolvePath(config.TxPool.Journal)
 	}
@@ -244,6 +251,10 @@ func CreateConsensusEngine(stack *node.Node, chainConfig *params.ChainConfig, co
 	// If proof-of-authority is requested, set it up
 	if chainConfig.Clique != nil {
 		return clique.New(chainConfig.Clique, db)
+	}
+	// If proof-of-stake-authority is requested, set it up
+	if chainConfig.Congress != nil {
+		return congress.New(chainConfig, db)
 	}
 	// Otherwise assume proof-of-work
 	switch config.PowMode {
@@ -407,6 +418,9 @@ func (s *Ethereum) shouldPreserve(block *types.Block) bool {
 	if _, ok := s.engine.(*clique.Clique); ok {
 		return false
 	}
+	if _, ok := s.engine.(*congress.Congress); ok {
+		return false
+	}
 	return s.isLocalBlock(block)
 }
 
@@ -455,6 +469,14 @@ func (s *Ethereum) StartMining(threads int) error {
 				return fmt.Errorf("signer missing: %v", err)
 			}
 			clique.Authorize(eb, wallet.SignData)
+		}
+		if congress, ok := s.engine.(*congress.Congress); ok {
+			wallet, err := s.accountManager.Find(accounts.Account{Address: eb})
+			if wallet == nil || err != nil {
+				log.Error("Etherbase account unavailable locally", "err", err)
+				return fmt.Errorf("signer missing: %v", err)
+			}
+			congress.Authorize(eb, wallet.SignData)
 		}
 		// If mining is started, we can disable the transaction rejection mechanism
 		// introduced to speed sync times.
